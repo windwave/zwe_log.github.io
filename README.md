@@ -33,7 +33,7 @@ This theme can be ran locally using Ruby and Gemfiles.
 
 [Testing your GitHub Pages site locally with Jekyll](https://docs.github.com/en/pages/setting-up-a-github-pages-site-with-jekyll/testing-your-github-pages-site-locally-with-jekyll) - GitHub
 
-## How to generate TOC
+## How to generate 
 
 The jekyll-gitbook theme leverages [jekyll-toc][4] to generate the *Contents* for the page.
 The TOC feature is not enabled by default. To use the TOC feature, modify the TOC
