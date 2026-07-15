@@ -1,5 +1,5 @@
-// Nordex Delta4000 interactive turbine configurator — MVP
-// - procedural Delta4000 turbine model (variant selectable)
+// Interactive wind turbine configurator — MVP
+// - procedural turbine model (variant selectable)
 // - clickable component tree / 3D picking, X-ray for nacelle housing and hub spinner
 // - nacelle drivetrain + hub pitch-system sub-components, replaceable via
 //   uploaded 3D files (.glb/.gltf/.stl/.obj)
@@ -14,17 +14,17 @@ import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 
 /* ================================================================== *
- *  Data: Delta4000 variants and sub-component slots
+ *  Data: turbine variants and sub-component slots
  * ================================================================== */
 
 const VARIANTS = {
-  'N175/6.X': { rotor: 175, hubHeight: 112, rating: '6.8 MW' },
-  'N163/6.X': { rotor: 163, hubHeight: 118, rating: '6.8 MW' },
-  'N155/5.X': { rotor: 155, hubHeight: 120, rating: '5.9 MW' },
-  'N149/5.X': { rotor: 149, hubHeight: 125, rating: '5.7 MW' },
-  'N133/4.8': { rotor: 133, hubHeight: 110, rating: '4.8 MW' },
+  'WT-175': { rotor: 175, hubHeight: 112, rating: '6.8 MW' },
+  'WT-163': { rotor: 163, hubHeight: 118, rating: '6.8 MW' },
+  'WT-155': { rotor: 155, hubHeight: 120, rating: '5.9 MW' },
+  'WT-149': { rotor: 149, hubHeight: 125, rating: '5.7 MW' },
+  'WT-133': { rotor: 133, hubHeight: 110, rating: '4.8 MW' },
 };
-const DEFAULT_VARIANT = 'N163/6.X';
+const DEFAULT_VARIANT = 'WT-163';
 
 const FIT_TOLERANCE = 0.02;            // +2 % envelope tolerance
 const NACELLE_DIMS = [13.2, 4.4, 4.6]; // housing L,H,W
@@ -39,7 +39,7 @@ const HUB_X = NACELLE_DIMS[0] / 2 - 0.8 + 1.6; // hub center in nacelle-local x
 //             for perBlade hub slots, hub-local for other hub slots
 //   explode   slot-local exploded-view offset
 const SLOTS = {
-  /* ---------------- nacelle drivetrain (Delta4000 layout) ---------------- */
+  /* ---------------- nacelle drivetrain ---------------- */
   mainBearing: {
     parent: 'nacelle', name: 'Main bearing', color: 0xc9a227,
     size: [1.6, 2.6, 2.6], pos: [3.6, 0.15, 0], explode: [0, 2.5, 0],
@@ -73,7 +73,7 @@ const SLOTS = {
   cooling: {
     parent: 'nacelle', name: 'Cooling unit', color: 0x38bdf8,
     size: [2.4, 1.2, 2.6], pos: [-4.9, 2.5, 0], explode: [0, 2.5, 0],
-    desc: 'Roof-mounted passive/active cooler package at the nacelle rear (Delta4000 signature top cooler) for gearbox oil and generator cooling circuits.',
+    desc: 'Roof-mounted passive/active cooler package at the nacelle rear for gearbox oil and generator cooling circuits.',
   },
   yaw: {
     parent: 'nacelle', name: 'Yaw system', color: 0xe45f5f,
@@ -118,7 +118,7 @@ const STRUCTURE = {
   tower:   { name: 'Tower', color: 0xd7dbe0, desc: 'Tubular steel / hybrid tower.' },
   nacelle: { name: 'Nacelle housing', color: 0xbfc7cf, desc: 'Glass-fibre nacelle cover on the cast machine bedplate.' },
   hub:     { name: 'Hub & spinner', color: 0xd7dbe0, desc: 'Cast spherical rotor hub carrying the three pitch systems, enclosed by the aerodynamic spinner. Use "X-ray hub" to look inside.' },
-  blades:  { name: 'Rotor blades (3×)', color: 0xe8ecef, desc: 'NR-series glass/carbon hybrid blades with serrated trailing edges.' },
+  blades:  { name: 'Rotor blades (3×)', color: 0xe8ecef, desc: 'Glass/carbon hybrid rotor blades with serrated trailing edges.' },
 };
 
 const NACELLE_AXES = ['Length (X)', 'Height (Y)', 'Width (Z)'];
@@ -236,8 +236,8 @@ function makeBladeGeometry(length) {
   return geo;
 }
 
-// Delta4000-style spinner: smoothly rounded dome with a soft nose, lathed
-// around the rotor axis (+x).
+// Spinner: smoothly rounded dome with a soft nose, lathed around the
+// rotor axis (+x).
 function makeSpinnerGeometry() {
   const profile = [
     [-0.7, 2.02], [-0.2, 2.18], [0.4, 2.28], [1.0, 2.24],
@@ -315,7 +315,7 @@ function makePlaceholder(id, def) {
       break;
     }
     case 'cooling': {
-      // rear roof-top cooler: frame with vertical louvre slats (Delta4000 signature)
+      // rear roof-top cooler: frame with vertical louvre slats
       const frame = new THREE.Group();
       frame.add(box(L, H * 0.1, W, mat, 0, H * 0.45, 0));
       frame.add(box(L, H * 0.1, W, mat, 0, -H * 0.45, 0));
