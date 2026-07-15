@@ -45,5 +45,8 @@ python3 -m http.server 8000
   real installation envelopes.
 - Fit checking is bounding-box based (axis-aligned, with tolerance). Mesh-level
   collision/clearance checking would be the next iteration.
-- Three.js r160 is loaded from the jsDelivr CDN; an internet connection is
-  required at page load.
+- Three.js r160 is loaded from the jsDelivr CDN (pinned version); an internet
+  connection is required at page load. For fully offline use, download the
+  `three@0.160.0` npm package, copy `build/three.module.js` and the used
+  `examples/jsm/` addons into `vendor/`, and point the import map in
+  `index.html` at `./vendor/…`.
