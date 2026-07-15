@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nordex Delta4000 — Interactive Turbine Configurator (MVP)</title>
+<link rel="stylesheet" href="css/style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three.module.js",
+    "three/addons/": "./vendor/addons/"
+  }
+}
+</script>
+</head>
+<body>
+
+<header id="topbar">
+  <div class="brand">
+    <span class="logo">◆</span>
+    <div>
+      <h1>Delta4000 Configurator</h1>
+      <span class="subtitle">Nordex turbine platform — interactive MVP</span>
+    </div>
+  </div>
+  <div class="controls">
+    <label>Turbine model
+      <select id="variantSelect"></select>
+    </label>
+    <label>Explode
+      <input type="range" id="explodeSlider" min="0" max="1" step="0.01" value="0">
+    </label>
+    <label class="check"><input type="checkbox" id="housingToggle" checked> X-ray nacelle</label>
+    <label class="check"><input type="checkbox" id="spinToggle"> Spin rotor</label>
+    <button id="resetViewBtn" title="Reset camera">⟲ Reset view</button>
+  </div>
+</header>
+
+<aside id="sidebar">
+  <h2>Components</h2>
+  <p class="hint">Click a component in the tree or in the 3D view to inspect it. Sub-components inside the nacelle can be replaced with your own 3D model.</p>
+  <ul id="componentTree"></ul>
+</aside>
+
+<main id="viewport">
+  <canvas id="canvas3d"></canvas>
+  <div id="dropHint" class="hidden">Drop 3D file to install into <b id="dropSlotName"></b></div>
+  <div id="viewHelp">drag&nbsp;·&nbsp;rotate&nbsp;&nbsp;|&nbsp;&nbsp;scroll&nbsp;·&nbsp;zoom&nbsp;&nbsp;|&nbsp;&nbsp;right-drag&nbsp;·&nbsp;pan&nbsp;&nbsp;|&nbsp;&nbsp;click&nbsp;·&nbsp;select</div>
+</main>
+
+<section id="inspector" class="hidden">
+  <button id="inspectorClose" class="closebtn">×</button>
+  <h2 id="inspName">—</h2>
+  <p id="inspDesc" class="desc"></p>
+  <div id="inspEnvelope"></div>
+  <div id="inspCurrent"></div>
+
+  <div id="swapPanel" class="hidden">
+    <h3>Replace sub-component</h3>
+    <p class="hint">Upload a 3D model (<b>.glb / .gltf / .stl / .obj</b>). It is checked against the installation envelope of this slot.</p>
+    <label>Model units
+      <select id="unitSelect">
+        <option value="1">meters (m)</option>
+        <option value="0.01">centimeters (cm)</option>
+        <option value="0.001">millimeters (mm)</option>
+      </select>
+    </label>
+    <input type="file" id="fileInput" accept=".glb,.gltf,.stl,.obj" hidden>
+    <button id="uploadBtn" class="primary">⬆ Upload 3D model…</button>
+    <div class="samples">
+      <span>No file at hand? Demo with a generated sample:</span>
+      <button id="sampleFitBtn">Sample — correct size</button>
+      <button id="sampleBigBtn">Sample — oversized</button>
+    </div>
+    <button id="restoreBtn" class="hidden">↩ Restore original component</button>
+  </div>
+</section>
+
+<!-- Fit result popups -->
+<div id="fitModal" class="hidden">
+  <div id="fitCard">
+    <div id="fitHeader"><span id="fitIcon"></span><span id="fitTitle"></span></div>
+    <div id="fitBody"></div>
+    <div id="fitActions">
+      <button id="fitZoomBtn" class="hidden">🔍 Zoom to problem</button>
+      <button id="fitCloseBtn">Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="loadingOverlay" class="hidden"><div class="spinner"></div><span id="loadingText">Loading model…</span></div>
+
+<footer id="statusbar"><span id="statusText">Ready.</span></footer>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
