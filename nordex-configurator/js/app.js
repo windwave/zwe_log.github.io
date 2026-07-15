@@ -1,7 +1,8 @@
 // Nordex Delta4000 interactive turbine configurator — MVP
 // - procedural Delta4000 turbine model (variant selectable)
-// - clickable component tree / 3D picking
-// - sub-component replacement via uploaded 3D files (.glb/.gltf/.stl/.obj)
+// - clickable component tree / 3D picking, X-ray for nacelle housing and hub spinner
+// - nacelle drivetrain + hub pitch-system sub-components, replaceable via
+//   uploaded 3D files (.glb/.gltf/.stl/.obj)
 // - fit check against each slot's installation envelope:
 //     fits     -> green popup
 //     misfit   -> red popup + camera zoom to the violating dimensions
@@ -13,7 +14,7 @@ import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 
 /* ================================================================== *
- *  Data: Delta4000 variants and nacelle sub-component slots
+ *  Data: Delta4000 variants and sub-component slots
  * ================================================================== */
 
 const VARIANTS = {
@@ -25,70 +26,104 @@ const VARIANTS = {
 };
 const DEFAULT_VARIANT = 'N163/6.X';
 
-// Nacelle-internal sub-component slots.
-// size = installation envelope [length(x), height(y), width(z)] in meters,
-// pos  = slot center in nacelle-local coordinates (x towards hub).
+const FIT_TOLERANCE = 0.02;            // +2 % envelope tolerance
+const NACELLE_DIMS = [13.2, 4.4, 4.6]; // housing L,H,W
+const HUB_X = NACELLE_DIMS[0] / 2 - 0.8 + 1.6; // hub center in nacelle-local x
+
+// Sub-component slots.
+//   parent    'nacelle' (fixed frame) or 'hub' (rotates with the rotor)
+//   size      installation envelope [x, y, z] in meters, in slot-local axes
+//   perBlade  true -> 3 instances, one per blade root (slot-local +y = radial,
+//             +x = rotor axis, +z = tangential)
+//   pos       slot center: nacelle-local for nacelle slots, blade-root-local
+//             for perBlade hub slots, hub-local for other hub slots
+//   explode   slot-local exploded-view offset
 const SLOTS = {
+  /* ---------------- nacelle drivetrain (Delta4000 layout) ---------------- */
   mainBearing: {
-    name: 'Main bearing', color: 0xc9a227,
-    size: [1.6, 2.6, 2.6], pos: [3.6, 0.15, 0],
-    desc: 'Rotor main bearing unit. Carries rotor loads into the bedplate.',
-    explode: [0.0, 2.5, 0],
+    parent: 'nacelle', name: 'Main bearing', color: 0xc9a227,
+    size: [1.6, 2.6, 2.6], pos: [3.6, 0.15, 0], explode: [0, 2.5, 0],
+    desc: 'Double-row tapered roller main bearing in a cast pillow-block housing. Carries the rotor loads into the machine bedplate.',
   },
   mainShaft: {
-    name: 'Main shaft', color: 0x9aa5b1,
-    size: [2.3, 1.3, 1.3], pos: [1.9, 0.15, 0],
-    desc: 'Low-speed shaft connecting rotor hub and gearbox.',
-    explode: [0, 3.5, 0],
+    parent: 'nacelle', name: 'Main shaft', color: 0x9aa5b1,
+    size: [2.3, 1.3, 1.3], pos: [1.9, 0.15, 0], explode: [0, 3.5, 0],
+    desc: 'Forged low-speed shaft with rotor flange, connecting the hub to the gearbox planetary stage.',
   },
   gearbox: {
-    name: 'Gearbox', color: 0x3b82f6,
-    size: [2.9, 2.9, 2.9], pos: [-0.2, 0.25, 0],
-    desc: 'Multi-stage planetary/spur gearbox stepping rotor speed up for the generator.',
-    explode: [0, 4.5, 0],
+    parent: 'nacelle', name: 'Gearbox', color: 0x3b82f6,
+    size: [2.9, 2.9, 2.9], pos: [-0.2, 0.25, 0], explode: [0, 4.5, 0],
+    desc: 'Three-stage gearbox (two planetary stages + one helical spur stage) with torque arms to the bedplate, stepping rotor speed up for the generator.',
   },
   coupling: {
-    name: 'Coupling & brake', color: 0xa855f7,
-    size: [1.1, 1.1, 1.1], pos: [-1.9, 0.35, 0],
-    desc: 'High-speed shaft coupling with integrated rotor brake disc.',
-    explode: [0, 3.0, 0],
+    parent: 'nacelle', name: 'Coupling & brake', color: 0xa855f7,
+    size: [1.3, 1.6, 1.3], pos: [-1.9, 0.3, 0], explode: [0, 3.0, 0],
+    desc: 'Flexible high-speed shaft coupling with slip protection and the mechanical rotor brake disc with hydraulic caliper.',
   },
   generator: {
-    name: 'Generator', color: 0x10b981,
-    size: [2.6, 2.5, 2.5], pos: [-3.6, 0.25, 0],
-    desc: 'Doubly-fed induction generator (Delta4000 drivetrain).',
-    explode: [0, 4.0, 0],
+    parent: 'nacelle', name: 'Generator', color: 0x10b981,
+    size: [2.6, 2.5, 2.5], pos: [-3.6, 0.25, 0], explode: [0, 4.0, 0],
+    desc: 'Doubly-fed induction generator (DFIG) with air cooling, end shields, top terminal box and rear fan cowl.',
   },
   transformer: {
-    name: 'Transformer', color: 0xf97316,
-    size: [1.7, 2.4, 2.1], pos: [-5.3, 0.1, 0],
-    desc: 'Nacelle-integrated medium-voltage transformer at the rear.',
-    explode: [-3.0, 1.5, 0],
+    parent: 'nacelle', name: 'Transformer', color: 0xf97316,
+    size: [1.7, 2.4, 2.1], pos: [-5.3, 0.1, 0], explode: [-3.0, 1.5, 0],
+    desc: 'Nacelle-integrated medium-voltage cast-resin transformer at the rear, with side radiator panels and HV bushings.',
   },
   cooling: {
-    name: 'Cooling unit', color: 0x38bdf8,
-    size: [2.1, 1.0, 2.2], pos: [-4.6, 2.35, 0],
-    desc: 'Roof-top passive/active cooler package.',
-    explode: [0, 2.5, 0],
+    parent: 'nacelle', name: 'Cooling unit', color: 0x38bdf8,
+    size: [2.4, 1.2, 2.6], pos: [-4.9, 2.5, 0], explode: [0, 2.5, 0],
+    desc: 'Roof-mounted passive/active cooler package at the nacelle rear (Delta4000 signature top cooler) for gearbox oil and generator cooling circuits.',
   },
   yaw: {
-    name: 'Yaw system', color: 0xe45f5f,
-    size: [2.2, 0.9, 2.2], pos: [2.6, -1.75, 0],
-    desc: 'Yaw bearing and drives orienting the nacelle into the wind.',
-    explode: [0, -2.5, 0],
+    parent: 'nacelle', name: 'Yaw system', color: 0xe45f5f,
+    size: [2.6, 1.0, 2.6], pos: [2.6, -1.75, 0], explode: [0, -2.5, 0],
+    desc: 'Yaw bearing ring gear with multiple electric yaw drives and yaw brakes, orienting the nacelle into the wind.',
+  },
+  controlCabinet: {
+    parent: 'nacelle', name: 'Control cabinets', color: 0x94a3b8,
+    size: [1.7, 2.0, 0.8], pos: [-2.6, -0.15, 1.75], explode: [0, 0, 3.0],
+    desc: 'Nacelle control cabinets (converter / turbine control) mounted along the nacelle wall.',
+  },
+  lubeUnit: {
+    parent: 'nacelle', name: 'Lubrication & oil unit', color: 0x84cc16,
+    size: [1.3, 1.2, 0.9], pos: [0.9, -0.85, -1.6], explode: [0, 0, -3.0],
+    desc: 'Gearbox lubrication pump station with oil tank, filters and cooler piping.',
+  },
+  /* ---------------- hub / pitch system ---------------- */
+  pitchBearing: {
+    parent: 'hub', name: 'Pitch bearing (3×)', color: 0xd4a017, perBlade: true,
+    size: [2.5, 0.55, 2.5], pos: [0.15, 1.2, 0], explode: [0, 2.4, 0],
+    desc: 'Four-point-contact blade pitch bearing with internal ring gear at each blade root. Replacing one model updates all three positions.',
+  },
+  pitchDrive: {
+    parent: 'hub', name: 'Pitch drive / motor (3×)', color: 0x2dd4bf, perBlade: true,
+    size: [0.7, 1.2, 0.7], pos: [0.45, 0.72, 0.95], explode: [1.6, 1.0, 1.6],
+    desc: 'Electric pitch actuator per blade: servo motor with planetary gearbox and pinion engaging the pitch bearing ring gear.',
+  },
+  pitchBattery: {
+    parent: 'hub', name: 'Pitch battery box (3×)', color: 0x818cf8, perBlade: true,
+    size: [0.8, 0.9, 0.6], pos: [-0.4, 0.72, -0.95], explode: [-1.6, 1.0, -1.6],
+    desc: 'Backup energy storage per blade for fail-safe feathering of the rotor blade on grid loss.',
+  },
+  hubControl: {
+    parent: 'hub', name: 'Hub control cabinet', color: 0xf472b6,
+    size: [1.0, 1.1, 1.0], pos: [1.55, 0, 0], explode: [3.0, 0, 0],
+    desc: 'Central pitch control cabinet and slip-ring interface inside the spinner nose.',
   },
 };
 
 // Structural (non-replaceable) components shown in the tree.
 const STRUCTURE = {
-  tower:   { name: 'Tower',   color: 0xd7dbe0, desc: 'Tubular steel / hybrid tower.' },
-  nacelle: { name: 'Nacelle housing', color: 0xbfc7cf, desc: 'Glass-fibre nacelle cover on the bedplate.' },
-  hub:     { name: 'Hub & spinner',   color: 0xd7dbe0, desc: 'Cast rotor hub with pitch system, aerodynamic spinner.' },
-  blades:  { name: 'Rotor blades (3×)', color: 0xe8ecef, desc: 'NR-series glass/carbon hybrid blades with serrations.' },
+  tower:   { name: 'Tower', color: 0xd7dbe0, desc: 'Tubular steel / hybrid tower.' },
+  nacelle: { name: 'Nacelle housing', color: 0xbfc7cf, desc: 'Glass-fibre nacelle cover on the cast machine bedplate.' },
+  hub:     { name: 'Hub & spinner', color: 0xd7dbe0, desc: 'Cast spherical rotor hub carrying the three pitch systems, enclosed by the aerodynamic spinner. Use "X-ray hub" to look inside.' },
+  blades:  { name: 'Rotor blades (3×)', color: 0xe8ecef, desc: 'NR-series glass/carbon hybrid blades with serrated trailing edges.' },
 };
 
-const FIT_TOLERANCE = 0.02;        // +2 % envelope tolerance
-const NACELLE_DIMS = [13.2, 4.4, 4.6]; // housing L,H,W
+const NACELLE_AXES = ['Length (X)', 'Height (Y)', 'Width (Z)'];
+const HUB_AXES = ['Axial (X)', 'Radial (Y)', 'Tangential (Z)'];
+function axesFor(def) { return def.parent === 'hub' ? HUB_AXES : NACELLE_AXES; }
 
 /* ================================================================== *
  *  Scene setup
@@ -136,21 +171,49 @@ grid.position.y = 0.02;
 scene.add(grid);
 
 /* ================================================================== *
- *  Procedural turbine builder
+ *  Materials / shared state
  * ================================================================== */
 
 const matSteel = new THREE.MeshStandardMaterial({ color: 0xdfe3e8, roughness: 0.45, metalness: 0.15 });
+const matCast = new THREE.MeshStandardMaterial({ color: 0x7b8494, roughness: 0.7, metalness: 0.35 });
 const matHousing = new THREE.MeshStandardMaterial({
   color: 0xcfd6dd, roughness: 0.5, metalness: 0.05,
   transparent: true, opacity: 0.22, depthWrite: false, side: THREE.DoubleSide,
 });
+const matSpinner = new THREE.MeshStandardMaterial({
+  color: 0xd8dee5, roughness: 0.4, metalness: 0.05,
+  transparent: true, opacity: 0.25, depthWrite: false, side: THREE.DoubleSide,
+});
 
 let turbine = null;        // root group
-let nacelleGroup = null;   // nacelle-local group (slots live here)
-let rotorGroup = null;     // spins
+let nacelleGroup = null;   // nacelle-local group
+let rotorGroup = null;     // spins; hub slots live here
 let housingMesh = null;
-const slotRuntime = {};    // id -> { group, mesh, envelopeHelper, custom, status }
+let spinnerMesh = null;
+const shellMeshes = new Set(); // meshes skipped by picking while transparent
+const slotRuntime = {};    // id -> { instGroups[], meshes[], envelopeHelpers[], custom, status }
 const structureMeshes = {}; // id -> mesh/group for structural parts
+
+/* ================================================================== *
+ *  Geometry helpers
+ * ================================================================== */
+
+function box(l, h, w, mat, x = 0, y = 0, z = 0) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(l, h, w), mat);
+  m.position.set(x, y, z);
+  return m;
+}
+function cylX(r1, r2, len, mat, x = 0, y = 0, z = 0, seg = 24) {
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(r1, r2, len, seg), mat);
+  m.rotation.z = Math.PI / 2;
+  m.position.set(x, y, z);
+  return m;
+}
+function cylY(r1, r2, len, mat, x = 0, y = 0, z = 0, seg = 24) {
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(r1, r2, len, seg), mat);
+  m.position.set(x, y, z);
+  return m;
+}
 
 function makeBladeGeometry(length) {
   // Loft a blade-ish shape out of a cylinder: chord/thickness/twist vary along span.
@@ -161,7 +224,6 @@ function makeBladeGeometry(length) {
   for (let i = 0; i < p.count; i++) {
     v.fromBufferAttribute(p, i);
     const t = THREE.MathUtils.clamp(v.y, 0, 1); // 0 root -> 1 tip
-    // chord: cylindrical root, max at ~22% span, tapering to slim tip
     const grow = Math.min(t / 0.22, 1);
     const chord = THREE.MathUtils.lerp(2.2, 4.6, Math.sin(grow * Math.PI / 2)) * (1 - 0.82 * Math.max(0, (t - 0.22) / 0.78));
     const thick = chord * THREE.MathUtils.lerp(0.9, 0.16, Math.min(t / 0.3, 1));
@@ -174,62 +236,174 @@ function makeBladeGeometry(length) {
   return geo;
 }
 
+// Delta4000-style spinner: smoothly rounded dome with a soft nose, lathed
+// around the rotor axis (+x).
+function makeSpinnerGeometry() {
+  const profile = [
+    [-0.7, 2.02], [-0.2, 2.18], [0.4, 2.28], [1.0, 2.24],
+    [1.6, 2.05], [2.2, 1.72], [2.7, 1.28], [3.05, 0.78], [3.25, 0.32], [3.32, 0.0],
+  ].map(([x, r]) => new THREE.Vector2(Math.max(r, 0.001), x));
+  const geo = new THREE.LatheGeometry(profile, 40);
+  geo.rotateZ(-Math.PI / 2); // lathe axis +y -> +x
+  return geo;
+}
+
+/* ================================================================== *
+ *  Placeholder (OEM default) sub-components — stylized but recognizable
+ * ================================================================== */
+
 function makePlaceholder(id, def) {
-  // Stylized default sub-component sized to ~92 % of its envelope.
-  const [L, H, W] = def.size.map(d => d * 0.92);
+  const [L, H, W] = def.size.map(d => d * 0.9);
   const mat = new THREE.MeshStandardMaterial({ color: def.color, roughness: 0.5, metalness: 0.3 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x3c4454, roughness: 0.6, metalness: 0.4 });
   const g = new THREE.Group();
-  let main;
-  if (id === 'mainShaft') {
-    main = new THREE.Mesh(new THREE.CylinderGeometry(H * 0.35, H * 0.42, L, 24), mat);
-    main.rotation.z = Math.PI / 2;
-  } else if (id === 'generator') {
-    main = new THREE.Mesh(new THREE.CylinderGeometry(H * 0.46, H * 0.46, L * 0.95, 28), mat);
-    main.rotation.z = Math.PI / 2;
-    const fin = new THREE.Mesh(new THREE.BoxGeometry(L * 0.7, H * 0.98, W * 0.1), mat);
-    g.add(fin);
-  } else if (id === 'mainBearing') {
-    main = new THREE.Mesh(new THREE.TorusGeometry(H * 0.36, H * 0.13, 16, 32), mat);
-    main.rotation.y = Math.PI / 2;
-    const housing = new THREE.Mesh(new THREE.CylinderGeometry(H * 0.5, H * 0.5, L * 0.8, 24), mat);
-    housing.rotation.z = Math.PI / 2;
-    g.add(housing);
-  } else if (id === 'coupling') {
-    main = new THREE.Mesh(new THREE.CylinderGeometry(H * 0.45, H * 0.45, L * 0.9, 20), mat);
-    main.rotation.z = Math.PI / 2;
-  } else if (id === 'cooling') {
-    main = new THREE.Mesh(new THREE.BoxGeometry(L, H, W), mat);
-    for (let i = -2; i <= 2; i++) {
-      const lam = new THREE.Mesh(new THREE.BoxGeometry(L * 1.01, H * 0.08, W * 0.9),
-        new THREE.MeshStandardMaterial({ color: 0x9fb6c8, roughness: 0.4, metalness: 0.5 }));
-      lam.position.y = i * H * 0.18;
-      g.add(lam);
+
+  switch (id) {
+    case 'mainBearing': {
+      // pillow-block housing: base plate + split housing dome + shaft bore
+      g.add(box(L, H * 0.22, W * 0.95, mat, 0, -H * 0.38, 0));            // base
+      g.add(box(L * 0.92, H * 0.5, W * 0.62, mat, 0, -H * 0.05, 0));      // housing body
+      const dome = cylX(H * 0.38, H * 0.38, L * 0.9, mat, 0, H * 0.1, 0, 32); // housing cap
+      g.add(dome);
+      g.add(cylX(H * 0.2, H * 0.2, L * 1.05, dark, 0, H * 0.1, 0));       // shaft bore
+      break;
     }
-  } else if (id === 'yaw') {
-    main = new THREE.Mesh(new THREE.CylinderGeometry(W * 0.5, W * 0.5, H * 0.8, 32), mat);
-    for (let i = 0; i < 4; i++) {
-      const drv = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, H * 0.95, 12), mat);
-      const a = i * Math.PI / 2 + Math.PI / 4;
-      drv.position.set(Math.cos(a) * W * 0.42, 0.1, Math.sin(a) * W * 0.42);
-      g.add(drv);
+    case 'mainShaft': {
+      g.add(cylX(H * 0.3, H * 0.38, L * 0.85, mat, -L * 0.05, 0, 0, 28)); // tapered shaft
+      g.add(cylX(H * 0.48, H * 0.48, L * 0.12, mat, L * 0.44, 0, 0, 32)); // rotor flange
+      g.add(cylX(H * 0.36, H * 0.36, L * 0.1, mat, -L * 0.45, 0, 0, 28)); // gearbox flange
+      break;
     }
-  } else {
-    // gearbox, transformer: ribbed box
-    main = new THREE.Mesh(new THREE.BoxGeometry(L, H, W), mat);
-    for (let i = -1; i <= 1; i++) {
-      const rib = new THREE.Mesh(new THREE.BoxGeometry(L * 0.08, H * 1.04, W * 1.04), mat);
-      rib.position.x = i * L * 0.3;
-      g.add(rib);
+    case 'gearbox': {
+      g.add(cylX(H * 0.46, H * 0.42, L * 0.4, mat, L * 0.26, 0, 0, 32));  // planetary stage 1
+      g.add(cylX(H * 0.38, H * 0.34, L * 0.3, mat, -L * 0.08, 0, 0, 32)); // planetary stage 2
+      g.add(box(L * 0.28, H * 0.6, W * 0.5, mat, -L * 0.36, H * 0.04, W * 0.08)); // helical stage
+      g.add(box(L * 0.22, H * 0.14, W * 1.0, mat, L * 0.26, -H * 0.12, 0));       // torque arms
+      g.add(cylY(0.09, 0.09, H * 0.5, dark, 0, H * 0.42, W * 0.18));      // oil piping
+      g.add(cylX(0.09, 0.09, L * 0.7, dark, 0, H * 0.44, -W * 0.12));
+      break;
     }
+    case 'coupling': {
+      g.add(cylX(H * 0.11, H * 0.11, L * 0.95, mat, 0, 0, 0));            // HS shaft
+      g.add(cylX(H * 0.2, H * 0.2, L * 0.12, mat, L * 0.3, 0, 0));        // link packs
+      g.add(cylX(H * 0.2, H * 0.2, L * 0.12, mat, -L * 0.05, 0, 0));
+      g.add(cylX(H * 0.48, H * 0.48, 0.07, dark, -L * 0.34, 0, 0, 36));   // brake disc
+      g.add(box(0.28, H * 0.24, W * 0.2, mat, -L * 0.34, H * 0.42, 0));   // brake caliper
+      break;
+    }
+    case 'generator': {
+      g.add(cylX(H * 0.42, H * 0.42, L * 0.66, mat, 0, 0, 0, 32));        // stator body
+      g.add(cylX(H * 0.33, H * 0.33, L * 0.12, mat, L * 0.4, 0, 0, 28));  // end shields
+      g.add(cylX(H * 0.33, H * 0.33, L * 0.12, mat, -L * 0.4, 0, 0, 28));
+      for (let i = 0; i < 10; i++) {                                       // cooling fins
+        const a = (i / 10) * Math.PI * 2;
+        const fin = box(L * 0.62, 0.05, 0.16, mat, 0, 0, 0);
+        fin.position.set(0, Math.sin(a) * H * 0.43, Math.cos(a) * H * 0.43);
+        fin.rotation.x = -a;
+        g.add(fin);
+      }
+      g.add(box(L * 0.3, H * 0.18, W * 0.34, dark, L * 0.1, H * 0.5, 0)); // terminal box
+      g.add(cylX(H * 0.2, H * 0.28, L * 0.14, dark, -L * 0.52, 0, 0));    // fan cowl
+      break;
+    }
+    case 'transformer': {
+      g.add(box(L * 0.8, H * 0.82, W * 0.55, mat, 0, -H * 0.04, 0));      // core & coils box
+      for (const s of [1, -1]) for (let i = -3; i <= 3; i++)               // radiator fins
+        g.add(box(L * 0.7, H * 0.72, 0.05, mat, 0, -H * 0.06, s * W * 0.34 + i * 0.028 * s));
+      for (let i = -1; i <= 1; i++)                                        // HV bushings
+        g.add(cylY(0.06, 0.09, H * 0.2, dark, i * L * 0.24, H * 0.48, 0));
+      break;
+    }
+    case 'cooling': {
+      // rear roof-top cooler: frame with vertical louvre slats (Delta4000 signature)
+      const frame = new THREE.Group();
+      frame.add(box(L, H * 0.1, W, mat, 0, H * 0.45, 0));
+      frame.add(box(L, H * 0.1, W, mat, 0, -H * 0.45, 0));
+      frame.add(box(L * 0.06, H, W, mat, L * 0.47, 0, 0));
+      frame.add(box(L * 0.06, H, W, mat, -L * 0.47, 0, 0));
+      for (let i = -4; i <= 4; i++)
+        frame.add(box(L * 0.88, H * 0.8, 0.05, mat, 0, 0, i * W * 0.105));
+      g.add(frame);
+      break;
+    }
+    case 'yaw': {
+      g.add(cylY(W * 0.46, W * 0.46, H * 0.34, mat, 0, -H * 0.2, 0, 40)); // ring gear
+      g.add(cylY(W * 0.36, W * 0.36, H * 0.38, dark, 0, -H * 0.19, 0, 40));
+      for (let i = 0; i < 6; i++) {                                        // yaw drives
+        const a = i * Math.PI / 3 + Math.PI / 6;
+        const x = Math.cos(a) * W * 0.38, z = Math.sin(a) * W * 0.38;
+        g.add(cylY(0.1, 0.1, H * 0.7, mat, x, H * 0.12, z));
+        g.add(cylY(0.14, 0.14, H * 0.25, dark, x, H * 0.42, z));
+      }
+      break;
+    }
+    case 'controlCabinet': {
+      for (let i = -1; i <= 1; i++)                                        // cabinet row
+        g.add(box(L * 0.3, H, W, mat, i * L * 0.32, 0, 0));
+      g.add(box(L * 0.96, 0.06, W * 0.9, dark, 0, H * 0.52, 0));          // cable tray
+      break;
+    }
+    case 'lubeUnit': {
+      g.add(cylY(W * 0.4, W * 0.4, H * 0.85, mat, -L * 0.24, 0, 0, 24));  // oil tank
+      g.add(box(L * 0.4, H * 0.5, W * 0.7, mat, L * 0.26, -H * 0.2, 0));  // pump/filter block
+      g.add(cylX(0.05, 0.05, L * 0.6, dark, 0.05, H * 0.32, 0));          // piping
+      g.add(cylY(0.05, 0.05, H * 0.5, dark, L * 0.26, H * 0.12, 0));
+      break;
+    }
+    case 'pitchBearing': {
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(L * 0.42, H * 0.42, 14, 40), mat);
+      ring.rotation.x = Math.PI / 2;                                       // normal = radial (+y)
+      g.add(ring);
+      const inner = cylY(L * 0.34, L * 0.34, H * 0.8, dark, 0, 0, 0, 40); // inner ring gear
+      g.add(inner);
+      for (let i = 0; i < 12; i++) {                                       // bolt circle
+        const a = (i / 12) * Math.PI * 2;
+        g.add(cylY(0.035, 0.035, H * 1.0, dark, Math.cos(a) * L * 0.42, 0, Math.sin(a) * L * 0.42));
+      }
+      break;
+    }
+    case 'pitchDrive': {
+      g.add(cylY(W * 0.3, W * 0.3, H * 0.5, mat, 0, H * 0.2, 0, 20));     // servo motor
+      g.add(cylY(W * 0.36, W * 0.36, H * 0.3, dark, 0, -H * 0.2, 0, 20)); // planetary gearbox
+      g.add(cylY(W * 0.16, W * 0.16, H * 0.16, mat, 0, -H * 0.44, 0, 16));// pinion
+      g.add(box(W * 0.3, H * 0.16, W * 0.5, dark, 0, H * 0.05, W * 0.3)); // junction box
+      break;
+    }
+    case 'pitchBattery': {
+      g.add(box(L, H * 0.72, W, mat, 0, -H * 0.1, 0));                    // battery cabinet
+      g.add(box(L * 0.8, H * 0.22, W * 0.8, dark, 0, H * 0.36, 0));       // charger unit
+      break;
+    }
+    case 'hubControl': {
+      g.add(box(L * 0.9, H * 0.9, W * 0.9, mat, 0, 0, 0));                // cabinet
+      g.add(cylX(H * 0.16, H * 0.16, L * 0.5, dark, L * 0.6, 0, 0));      // slip-ring shaft
+      break;
+    }
+    default:
+      g.add(box(L, H, W, mat));
   }
-  main.castShadow = true;
-  g.add(main);
   g.traverse(o => { o.castShadow = true; });
   return g;
 }
 
+/* ================================================================== *
+ *  Turbine builder
+ * ================================================================== */
+
+function slotInstanceTransforms(def) {
+  // -> array of { parentGetter, rot, pos } describing each instance frame
+  if (def.parent === 'hub') {
+    if (def.perBlade) {
+      return [0, 1, 2].map(k => ({ inHub: true, rotX: k * 2 * Math.PI / 3, pos: def.pos }));
+    }
+    return [{ inHub: true, rotX: 0, pos: def.pos }];
+  }
+  return [{ inHub: false, rotX: 0, pos: def.pos }];
+}
+
 function buildTurbine(variantKey) {
   if (turbine) { scene.remove(turbine); disposeTree(turbine); }
+  shellMeshes.clear();
   const v = VARIANTS[variantKey];
   turbine = new THREE.Group();
 
@@ -246,7 +420,7 @@ function buildTurbine(variantKey) {
   turbine.add(foundation);
   structureMeshes.tower = tower;
 
-  // --- nacelle group ---
+  // --- nacelle ---
   nacelleGroup = new THREE.Group();
   nacelleGroup.position.y = v.hubHeight;
   turbine.add(nacelleGroup);
@@ -256,6 +430,7 @@ function buildTurbine(variantKey) {
   housingMesh.position.set(-0.8, 0.3, 0);
   nacelleGroup.add(housingMesh);
   structureMeshes.nacelle = housingMesh;
+  shellMeshes.add(housingMesh);
 
   const bedplate = new THREE.Mesh(
     new THREE.BoxGeometry(NL * 0.9, 0.4, NW * 0.8),
@@ -264,73 +439,90 @@ function buildTurbine(variantKey) {
   bedplate.castShadow = true;
   nacelleGroup.add(bedplate);
 
-  // --- sub-component slots ---
-  for (const [id, def] of Object.entries(SLOTS)) {
-    const group = new THREE.Group();
-    group.position.fromArray(def.pos);
-    group.userData.basePos = new THREE.Vector3().fromArray(def.pos);
-    nacelleGroup.add(group);
-
-    const prev = slotRuntime[id];
-    const mesh = prev?.custom ? prev.mesh : makePlaceholder(id, def);
-    mesh.traverse(o => { o.userData.slotId = id; });
-    group.add(mesh);
-
-    const envelopeHelper = new THREE.LineSegments(
-      new THREE.EdgesGeometry(new THREE.BoxGeometry(...envelopeToBox(def.size))),
-      new THREE.LineBasicMaterial({ color: 0x22c55e, transparent: true, opacity: 0.9 }));
-    envelopeHelper.visible = false;
-    group.add(envelopeHelper);
-
-    slotRuntime[id] = {
-      group, mesh, envelopeHelper,
-      custom: prev?.custom ?? null,
-      status: prev?.status ?? 'default',
-    };
-  }
-
-  // --- rotor: hub + blades ---
+  // --- rotor: spinner + cast hub + blades (rotates as one) ---
   rotorGroup = new THREE.Group();
-  rotorGroup.position.set(NL / 2 - 0.8 + 1.2, 0.15, 0);
+  rotorGroup.position.set(HUB_X, 0.15, 0);
   nacelleGroup.add(rotorGroup);
 
-  const hub = new THREE.Mesh(new THREE.SphereGeometry(2.1, 28, 20), matSteel);
-  hub.scale.set(1.25, 1, 1);
-  hub.castShadow = true;
-  const spinner = new THREE.Mesh(new THREE.ConeGeometry(1.7, 2.4, 28), matSteel);
-  spinner.rotation.z = -Math.PI / 2;
-  spinner.position.x = 2.4;
-  spinner.castShadow = true;
-  rotorGroup.add(hub, spinner);
-  structureMeshes.hub = hub;
+  spinnerMesh = new THREE.Mesh(makeSpinnerGeometry(), matSpinner);
+  spinnerMesh.castShadow = true;
+  rotorGroup.add(spinnerMesh);
+  shellMeshes.add(spinnerMesh);
 
-  const bladeLen = v.rotor / 2 - 2.1;
+  const hubCasting = new THREE.Group();               // cast spherical hub
+  const hubBall = new THREE.Mesh(new THREE.SphereGeometry(1.35, 28, 20), matCast);
+  hubBall.scale.set(1.1, 1, 1);
+  hubBall.castShadow = true;
+  hubCasting.add(hubBall);
+  for (let k = 0; k < 3; k++) {                       // blade root flanges
+    const a = k * 2 * Math.PI / 3;
+    const fl = cylY(1.05, 1.15, 0.7, matCast, 0, 0, 0, 28);
+    fl.position.set(0.15, Math.cos(a) * 1.35, Math.sin(a) * 1.35);
+    fl.rotation.x = -a;
+    fl.castShadow = true;
+    hubCasting.add(fl);
+  }
+  rotorGroup.add(hubCasting);
+  structureMeshes.hub = hubCasting;
+  spinnerMesh.userData.structId = 'hub';
+
+  const bladeLen = v.rotor / 2 - 2.3;
   const bladeGeo = makeBladeGeometry(bladeLen);
   const matBlade = new THREE.MeshStandardMaterial({ color: 0xeef1f4, roughness: 0.35 });
   const bladesGroup = new THREE.Group();
   for (let i = 0; i < 3; i++) {
-    const blade = new THREE.Mesh(bladeGeo, matBlade);
-    blade.castShadow = true;
     const holder = new THREE.Group();
     holder.rotation.x = i * (2 * Math.PI / 3);
+    const blade = new THREE.Mesh(bladeGeo, matBlade);
+    blade.castShadow = true;
+    blade.position.set(0.15, 2.0, 0);                 // root sits on the pitch bearing
     holder.add(blade);
-    blade.position.y = 1.6;
     bladesGroup.add(holder);
   }
   rotorGroup.add(bladesGroup);
   structureMeshes.blades = bladesGroup;
 
-  for (const [id, mesh] of Object.entries(structureMeshes)) {
-    mesh.traverse ? mesh.traverse(o => { o.userData.structId = id; }) : (mesh.userData.structId = id);
+  // --- sub-component slots (nacelle + hub) ---
+  for (const [id, def] of Object.entries(SLOTS)) {
+    const prev = slotRuntime[id];
+    const rt = { def, instGroups: [], meshes: [], envelopeHelpers: [], custom: prev?.custom ?? null, status: prev?.status ?? 'default' };
+    const transforms = slotInstanceTransforms(def);
+    transforms.forEach((tr, i) => {
+      const frame = new THREE.Group();
+      frame.rotation.x = tr.rotX;
+      (tr.inHub ? rotorGroup : nacelleGroup).add(frame);
+
+      const inst = new THREE.Group();
+      inst.position.fromArray(tr.pos);
+      inst.userData.basePos = new THREE.Vector3().fromArray(tr.pos);
+      frame.add(inst);
+
+      const mesh = rt.custom ? wrapClone(rt.custom.template, id) : makePlaceholder(id, def);
+      mesh.traverse(o => { o.userData.slotId = id; });
+      inst.add(mesh);
+
+      const helper = new THREE.LineSegments(
+        new THREE.EdgesGeometry(new THREE.BoxGeometry(...def.size)),
+        new THREE.LineBasicMaterial({ color: 0x22c55e, transparent: true, opacity: 0.9 }));
+      helper.visible = false;
+      inst.add(helper);
+
+      rt.instGroups.push(inst);
+      rt.meshes.push(mesh);
+      rt.envelopeHelpers.push(helper);
+    });
+    slotRuntime[id] = rt;
+  }
+
+  for (const [id, obj] of Object.entries(structureMeshes)) {
+    obj.traverse(o => { if (!o.userData.slotId) o.userData.structId = id; });
   }
 
   scene.add(turbine);
   applyExplode(parseFloat(explodeSlider.value));
-  applyHousingMode();
+  applyShellModes();
   setStatus(`Built ${variantKey} — rotor ⌀${v.rotor} m, hub height ${v.hubHeight} m, ${v.rating}.`);
 }
-
-function envelopeToBox(size) { return [size[0], size[1], size[2]]; }
 
 function disposeTree(root) {
   root.traverse(o => {
@@ -343,7 +535,7 @@ function disposeTree(root) {
  *  Camera helpers (smooth fly-to)
  * ================================================================== */
 
-const camAnim = { active: false, t: 0, fromPos: new THREE.Vector3(), toPos: new THREE.Vector3(), fromTgt: new THREE.Vector3(), toTgt: new THREE.Vector3() };
+const camAnim = { active: false, t: 0, dur: 1, fromPos: new THREE.Vector3(), toPos: new THREE.Vector3(), fromTgt: new THREE.Vector3(), toTgt: new THREE.Vector3() };
 
 function flyTo(pos, target, duration = 1.1) {
   camAnim.fromPos.copy(camera.position);
@@ -365,7 +557,7 @@ function overviewCamera() {
 function zoomToSlot(id, dist = 9) {
   const rt = slotRuntime[id];
   const target = new THREE.Vector3();
-  rt.group.getWorldPosition(target);
+  rt.instGroups[0].getWorldPosition(target);
   const dir = new THREE.Vector3(0.55, 0.35, 1).normalize().multiplyScalar(dist);
   flyTo(target.clone().add(dir), target, 1.0);
 }
@@ -387,7 +579,8 @@ canvas.addEventListener('pointerup', e => {
   pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
   const hits = raycaster.intersectObjects(turbine.children, true)
-    .filter(h => h.object.visible && h.object !== housingMesh);
+    .filter(h => h.object.visible &&
+      !(shellMeshes.has(h.object) && h.object.material.opacity < 0.9));
   for (const h of hits) {
     const id = h.object.userData.slotId || h.object.userData.structId;
     if (id) { selectComponent(id); return; }
@@ -397,11 +590,9 @@ canvas.addEventListener('pointerup', e => {
 
 function selectComponent(id) {
   selectedId = id;
-  // tree highlight
   document.querySelectorAll('#componentTree li').forEach(li =>
     li.classList.toggle('selected', li.dataset.id === id));
-  // envelope helpers off
-  Object.values(slotRuntime).forEach(rt => { rt.envelopeHelper.visible = false; });
+  Object.values(slotRuntime).forEach(rt => rt.envelopeHelpers.forEach(h => { h.visible = false; }));
   clearMisfitViz();
 
   const inspector = document.getElementById('inspector');
@@ -419,15 +610,14 @@ function selectComponent(id) {
 
   if (isSlot) {
     const rt = slotRuntime[id];
-    rt.envelopeHelper.visible = true;
-    const [L, H, W] = def.size;
+    rt.envelopeHelpers.forEach(h => { h.visible = true; });
+    const labels = axesFor(def);
     envEl.innerHTML = `
       <div class="cap">Installation envelope (max. dimensions)</div>
       <table>
-        <tr><td>Length (along nacelle)</td><td>${L.toFixed(2)} m</td></tr>
-        <tr><td>Height</td><td>${H.toFixed(2)} m</td></tr>
-        <tr><td>Width</td><td>${W.toFixed(2)} m</td></tr>
+        ${def.size.map((s, i) => `<tr><td>${labels[i]}</td><td>${s.toFixed(2)} m</td></tr>`).join('')}
         <tr><td>Tolerance</td><td>+${(FIT_TOLERANCE * 100).toFixed(0)} %</td></tr>
+        ${def.perBlade ? '<tr><td>Installed per blade</td><td>3×</td></tr>' : ''}
       </table>`;
     envEl.classList.remove('hidden');
     curEl.classList.remove('hidden');
@@ -441,19 +631,22 @@ function selectComponent(id) {
     envEl.classList.add('hidden');
     curEl.classList.add('hidden');
     swap.classList.add('hidden');
+    const v = VARIANTS[variantSelect.value];
     if (id === 'tower') {
-      const v = VARIANTS[variantSelect.value];
       flyTo(new THREE.Vector3(60, v.hubHeight * 0.5, 60), new THREE.Vector3(0, v.hubHeight * 0.5, 0));
-    } else if (id === 'blades' || id === 'hub') {
-      const v = VARIANTS[variantSelect.value];
+    } else if (id === 'blades') {
       flyTo(new THREE.Vector3(v.rotor * 0.9, v.hubHeight, v.rotor * 0.55), new THREE.Vector3(0, v.hubHeight, 0));
+    } else if (id === 'hub') {
+      const t = new THREE.Vector3();
+      rotorGroup.getWorldPosition(t);
+      flyTo(t.clone().add(new THREE.Vector3(14, 4, 12)), t, 1.0);
     } else if (id === 'nacelle') {
       zoomToSlot('gearbox', 26);
     }
   }
 }
 
-function fmtDims(d) { return `${d[0].toFixed(2)} × ${d[1].toFixed(2)} × ${d[2].toFixed(2)} m (L×H×W)`; }
+function fmtDims(d) { return `${d[0].toFixed(2)} × ${d[1].toFixed(2)} × ${d[2].toFixed(2)} m`; }
 
 /* ================================================================== *
  *  Component tree UI
@@ -478,8 +671,9 @@ function buildTree() {
   };
   add('tower', STRUCTURE.tower);
   add('nacelle', STRUCTURE.nacelle);
-  for (const [id, def] of Object.entries(SLOTS)) add(id, def, true);
+  for (const [id, def] of Object.entries(SLOTS)) if (def.parent === 'nacelle') add(id, def, true);
   add('hub', STRUCTURE.hub);
+  for (const [id, def] of Object.entries(SLOTS)) if (def.parent === 'hub') add(id, def, true);
   add('blades', STRUCTURE.blades);
   refreshBadges();
 }
@@ -530,37 +724,44 @@ async function loadUserModel(file, unitScale) {
 }
 
 function measure(object) {
-  const box = new THREE.Box3().setFromObject(object);
+  const box3 = new THREE.Box3().setFromObject(object);
   const size = new THREE.Vector3();
-  box.getSize(size);
-  return { box, dims: [size.x, size.y, size.z] };
+  box3.getSize(size);
+  return { box: box3, dims: [size.x, size.y, size.z] };
 }
 
-function checkFit(dims, envelope) {
-  const axes = ['Length (X)', 'Height (Y)', 'Width (Z)'];
+function checkFit(dims, def) {
+  const labels = axesFor(def);
   const rows = dims.map((d, i) => {
-    const allowed = envelope[i] * (1 + FIT_TOLERANCE);
-    return { axis: axes[i], idx: i, actual: d, allowed: envelope[i], over: Math.max(0, d - allowed) };
+    const allowed = def.size[i] * (1 + FIT_TOLERANCE);
+    return { axis: labels[i], idx: i, actual: d, allowed: def.size[i], over: Math.max(0, d - allowed) };
   });
   return { fits: rows.every(r => r.over <= 0), rows };
 }
 
-function installModel(slotId, object, meta) {
-  const rt = slotRuntime[slotId];
-  // center the model in the slot
-  const { box } = measure(object);
+// clone a template model, centered, tagged for a slot
+function wrapClone(template, slotId) {
+  const clone = template.clone(true);
+  const { box: b } = measure(clone);
   const center = new THREE.Vector3();
-  box.getCenter(center);
-  object.position.sub(center);
+  b.getCenter(center);
+  clone.position.sub(center);
   const wrapper = new THREE.Group();
-  wrapper.add(object);
+  wrapper.add(clone);
   wrapper.traverse(o => { o.userData.slotId = slotId; o.castShadow = true; });
+  return wrapper;
+}
 
-  rt.group.remove(rt.mesh);
-  disposeTree(rt.mesh);
-  rt.group.add(wrapper);
-  rt.mesh = wrapper;
-  rt.custom = meta;
+function installModel(slotId, template, meta) {
+  const rt = slotRuntime[slotId];
+  rt.instGroups.forEach((inst, i) => {
+    inst.remove(rt.meshes[i]);
+    disposeTree(rt.meshes[i]);
+    const wrapper = wrapClone(template, slotId);
+    inst.add(wrapper);
+    rt.meshes[i] = wrapper;
+  });
+  rt.custom = { ...meta, template };
   rt.status = 'custom';
   refreshBadges();
   selectComponent(slotId);
@@ -574,14 +775,13 @@ async function handleUpload(file, unitScale, generated = null) {
   try {
     const object = generated ? file : await loadUserModel(file, unitScale);
     const { dims } = measure(object);
-    const result = checkFit(dims, def.size);
+    const result = checkFit(dims, def);
     const fileName = generated ? generated : file.name;
 
     if (result.fits) {
       installModel(slotId, object, { fileName, dims });
-      slotRuntime[slotId].status = 'custom';
       showFitResult(true, slotId, fileName, result);
-      setStatus(`${def.name}: "${fileName}" installed — fit OK.`);
+      setStatus(`${def.name}: "${fileName}" installed${def.perBlade ? ' at all 3 blade positions' : ''} — fit OK.`);
     } else {
       slotRuntime[slotId].status = 'failed';
       refreshBadges();
@@ -608,11 +808,10 @@ function showMisfitViz(slotId, object, result) {
   const def = SLOTS[slotId];
   const viz = new THREE.Group();
 
-  // hide current component, show the rejected model as a red ghost centered in the slot
-  rt.mesh.visible = false;
-  const { box } = measure(object);
+  rt.meshes.forEach(m => { m.visible = false; });
+  const { box: b } = measure(object);
   const center = new THREE.Vector3();
-  box.getCenter(center);
+  b.getCenter(center);
   object.position.sub(center);
   object.traverse(o => {
     if (o.isMesh) o.material = new THREE.MeshStandardMaterial({
@@ -621,13 +820,11 @@ function showMisfitViz(slotId, object, result) {
   });
   viz.add(object);
 
-  // green envelope box (allowed space)
   const envBox = new THREE.LineSegments(
     new THREE.EdgesGeometry(new THREE.BoxGeometry(...def.size)),
     new THREE.LineBasicMaterial({ color: 0x22c55e }));
   viz.add(envBox);
 
-  // red indicators on each violated axis
   const axisVec = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)];
   for (const row of result.rows) {
     if (row.over <= 0) continue;
@@ -635,7 +832,6 @@ function showMisfitViz(slotId, object, result) {
     const half = def.size[row.idx] / 2;
     const overHalf = row.actual / 2;
     for (const sign of [1, -1]) {
-      // translucent red plane at the envelope face that is being crossed
       const planeGeo = new THREE.PlaneGeometry(
         row.idx === 0 ? def.size[2] * 1.15 : def.size[0] * 1.15,
         row.idx === 1 ? def.size[2] * 1.15 : def.size[1] * 1.15);
@@ -646,7 +842,6 @@ function showMisfitViz(slotId, object, result) {
       if (row.idx === 0) plane.rotation.y = Math.PI / 2;
       if (row.idx === 1) plane.rotation.x = Math.PI / 2;
       viz.add(plane);
-      // arrow marking the overflow distance
       const arrow = new THREE.ArrowHelper(
         dir.clone().multiplyScalar(sign),
         dir.clone().multiplyScalar(sign * half),
@@ -655,16 +850,16 @@ function showMisfitViz(slotId, object, result) {
     }
   }
 
-  rt.group.add(viz);
+  rt.instGroups[0].add(viz);
   misfitViz = { group: viz, slotId };
 }
 
 function clearMisfitViz() {
   if (!misfitViz) return;
   const rt = slotRuntime[misfitViz.slotId];
-  rt.group.remove(misfitViz.group);
+  rt.instGroups[0].remove(misfitViz.group);
   disposeTree(misfitViz.group);
-  rt.mesh.visible = true;
+  rt.meshes.forEach(m => { m.visible = true; });
   misfitViz = null;
 }
 
@@ -690,7 +885,7 @@ function showFitResult(fits, slotId, fileName, result) {
 
   document.getElementById('fitBody').innerHTML = `
     <b>${fileName}</b> → <b>${def.name}</b> slot${fits
-      ? ' — all dimensions are within the installation envelope. The component has been installed.'
+      ? ` — all dimensions are within the installation envelope. The component has been installed${def.perBlade ? ' at all three blade positions' : ''}.`
       : ' — the highlighted dimensions exceed the installation envelope (+' + (FIT_TOLERANCE * 100).toFixed(0) + ' % tolerance). Red faces and arrows in the 3D view mark where it protrudes.'}
     <table>
       <tr><th>Dimension</th><th>Model</th><th>Envelope</th><th>Result</th></tr>
@@ -754,19 +949,27 @@ function applyExplode(t) {
   if (!nacelleGroup) return;
   for (const [id, def] of Object.entries(SLOTS)) {
     const rt = slotRuntime[id];
-    rt.group.position.copy(rt.group.userData.basePos)
-      .add(new THREE.Vector3().fromArray(def.explode).multiplyScalar(t));
+    rt.instGroups.forEach(inst => {
+      inst.position.copy(inst.userData.basePos)
+        .add(new THREE.Vector3().fromArray(def.explode).multiplyScalar(t));
+    });
   }
-  if (rotorGroup) rotorGroup.position.x = (NACELLE_DIMS[0] / 2 - 0.8 + 1.2) + t * 9;
+  if (rotorGroup) rotorGroup.position.x = HUB_X + t * 10;
 }
 
-document.getElementById('housingToggle').addEventListener('change', applyHousingMode);
-function applyHousingMode() {
-  const xray = document.getElementById('housingToggle').checked;
-  matHousing.opacity = xray ? 0.22 : 1.0;
-  matHousing.transparent = xray;
-  matHousing.depthWrite = !xray;
+document.getElementById('housingToggle').addEventListener('change', applyShellModes);
+document.getElementById('hubXrayToggle').addEventListener('change', applyShellModes);
+function applyShellModes() {
+  const nx = document.getElementById('housingToggle').checked;
+  matHousing.opacity = nx ? 0.22 : 1.0;
+  matHousing.transparent = nx;
+  matHousing.depthWrite = !nx;
   matHousing.needsUpdate = true;
+  const hx = document.getElementById('hubXrayToggle').checked;
+  matSpinner.opacity = hx ? 0.25 : 1.0;
+  matSpinner.transparent = hx;
+  matSpinner.depthWrite = !hx;
+  matSpinner.needsUpdate = true;
 }
 
 document.getElementById('resetViewBtn').addEventListener('click', () => {
@@ -798,12 +1001,14 @@ document.getElementById('restoreBtn').addEventListener('click', () => {
   if (!id || !SLOTS[id]) return;
   clearMisfitViz();
   const rt = slotRuntime[id];
-  rt.group.remove(rt.mesh);
-  disposeTree(rt.mesh);
-  const mesh = makePlaceholder(id, SLOTS[id]);
-  mesh.traverse(o => { o.userData.slotId = id; });
-  rt.group.add(mesh);
-  rt.mesh = mesh;
+  rt.instGroups.forEach((inst, i) => {
+    inst.remove(rt.meshes[i]);
+    disposeTree(rt.meshes[i]);
+    const mesh = makePlaceholder(id, SLOTS[id]);
+    mesh.traverse(o => { o.userData.slotId = id; });
+    inst.add(mesh);
+    rt.meshes[i] = mesh;
+  });
   rt.custom = null;
   rt.status = 'default';
   refreshBadges();
@@ -865,7 +1070,6 @@ function animate() {
     controls.target.lerpVectors(camAnim.fromTgt, camAnim.toTgt, k);
     if (camAnim.t >= 1) camAnim.active = false;
   }
-  // pulse misfit ghost
   if (misfitViz) {
     const pulse = 0.45 + 0.2 * Math.sin(clock.elapsedTime * 5);
     misfitViz.group.traverse(o => {
